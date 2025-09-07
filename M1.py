@@ -1,6 +1,6 @@
 # app.py
 """
-SPIDER — Single-page iOS-style Dark Streamlit app
+POINT BLANCK — Single-page iOS-style Dark Streamlit app
 - Yahoo Finance data
 - Indicators: MA20, MA50, EMA, RSI, MACD, Bollinger Bands
 - Forecasts: Prophet, ARIMA, Random Forest, LSTM
@@ -60,7 +60,7 @@ except:
 # --------------------------
 # Streamlit page config + CSS
 # --------------------------
-st.set_page_config(page_title="M1", layout="wide")
+st.set_page_config(page_title="POINT.BLANCK", layout="wide")
 
 st.markdown("""
 <style>
@@ -256,7 +256,7 @@ def forecast_all(df: pd.DataFrame, periods: int = 30):
 # --------------------------
 # Main UI
 # --------------------------
-st.title("M1")
+st.title("POINT BLANCK")
 
 tickers_list = [
     "AAPL","MSFT","GOOG","AMZN","TSLA","META","NVDA","JPM","V","JNJ","WMT",
