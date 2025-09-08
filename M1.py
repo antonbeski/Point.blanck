@@ -4,8 +4,7 @@ POINT BLANK — Single-page iOS-style Dark Streamlit app
 - Yahoo Finance data
 - Indicators: MA20, MA50, EMA, RSI, MACD, Bollinger Bands
 - Forecasts: Prophet, ARIMA, Random Forest, LSTM
-- All models run in one click
-- Dark iOS-style UI, single centered page
+- Recent News display with time and date
 """
 
 import warnings
@@ -17,7 +16,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 
 # --------------------------
 # ML libraries
@@ -71,6 +70,11 @@ body, .stApp {background-color: #000000; color: #E6E6E6; font-family: -apple-sys
 .stCheckbox>div, .stRadio>div {color: #E6E6E6;}
 h1, h2, h3, h4 {color: #E6E6E6; text-align: center;}
 .model-availability {background-color:#0B0B0C; padding:8px; border-radius:8px; border:1px solid #202022;}
+.news-card {background-color:#0F0F10; border:1px solid #2C2C2E; border-radius:12px; padding:12px; margin-bottom:10px;}
+.news-title {font-weight:600; color:#E6E6E6;}
+.news-meta {font-size:12px; color:#9E9E9E; margin-top:2px;}
+a {color:#4DA6FF; text-decoration:none;}
+a:hover {text-decoration:underline;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -108,11 +112,7 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d") -> pd.DataFrame:
         if df is None or df.empty:
             return pd.DataFrame()
         df = df.reset_index()
-        df['Date'] = pd.to_datetime(df['Date'])
-        try:
-            df['Date'] = df['Date'].dt.tz_localize(None)
-        except Exception:
-            df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
+        df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
         for col in ['Open','High','Low','Close','Volume']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -120,6 +120,25 @@ def fetch_yahoo_data(ticker: str, period="6mo", interval="1d") -> pd.DataFrame:
         return df
     except Exception:
         return pd.DataFrame()
+
+def fetch_news(ticker: str, max_items: int = 5):
+    try:
+        t = yf.Ticker(ticker)
+        news = t.news if hasattr(t, "news") else []
+        items = []
+        for n in news[:max_items]:
+            ts = n.get("providerPublishTime", None)
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone() if ts else None
+            rel_time = dt.strftime("%Y-%m-%d %H:%M") if dt else ""
+            items.append({
+                "title": n.get("title", ""),
+                "link": n.get("link", ""),
+                "publisher": n.get("publisher", ""),
+                "time": rel_time
+            })
+        return items
+    except Exception:
+        return []
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy().reset_index(drop=True)
@@ -165,95 +184,6 @@ def plot_advanced(df: pd.DataFrame, title: str, show_indicators: bool = True):
     st.plotly_chart(fig, use_container_width=True, theme=None)
 
 # --------------------------
-# Forecasts (Prophet/ARIMA/RF/LSTM)
-# --------------------------
-def forecast_all(df: pd.DataFrame, periods: int = 30):
-    forecasts = {}
-    if HAS_PROPHET:
-        try:
-            prophet_df = df[['Date','Close']].rename(columns={'Date':'ds','Close':'y'}).copy()
-            prophet_df['ds'] = pd.to_datetime(prophet_df['ds']).dt.tz_localize(None)
-            m = Prophet(daily_seasonality=True, yearly_seasonality=True, weekly_seasonality=True)
-            m.fit(prophet_df)
-            future = m.make_future_dataframe(periods=periods, freq='D')
-            future['ds'] = pd.to_datetime(future['ds']).dt.tz_localize(None)
-            fc = m.predict(future)[['ds','yhat','yhat_lower','yhat_upper']].rename(columns={'ds':'Date'})
-            forecasts['Prophet'] = fc
-        except Exception as e:
-            st.error(f"Prophet error: {e}")
-
-    if HAS_ARIMA:
-        try:
-            series = df.set_index('Date')['Close'].sort_index()
-            series.index = pd.to_datetime(series.index).tz_localize(None)
-            daily_idx = pd.date_range(series.index.min(), series.index.max(), freq='D')
-            series = series.reindex(daily_idx).ffill()
-            model = ARIMA(series, order=(5,1,0)).fit()
-            fc = model.forecast(steps=periods)
-            dates = pd.date_range(start=series.index[-1]+timedelta(days=1), periods=periods)
-            forecasts['ARIMA'] = pd.DataFrame({'Date': dates, 'yhat': fc.values})
-        except Exception as e:
-            st.error(f"ARIMA error: {e}")
-
-    if HAS_SKLEARN:
-        try:
-            data = df[['Close']].copy()
-            n_lags = 5
-            for lag in range(1,n_lags+1):
-                data[f'lag_{lag}'] = data['Close'].shift(lag)
-            data = data.dropna()
-            X = data[[f'lag_{i}' for i in range(1,n_lags+1)]].values
-            y = data['Close'].values
-            model = RandomForestRegressor(n_estimators=200, random_state=42)
-            model.fit(X, y)
-            last_window = X[-1].tolist()
-            preds = []
-            for _ in range(periods):
-                p = float(model.predict([last_window]))
-                preds.append(p)
-                last_window = [p]+last_window[:-1]
-            dates = pd.date_range(start=df['Date'].iloc[-1]+timedelta(days=1), periods=periods)
-            forecasts['RandomForest'] = pd.DataFrame({'Date': dates, 'yhat': preds})
-        except Exception as e:
-            st.error(f"RandomForest error: {e}")
-
-    if HAS_TF and HAS_SKLEARN:
-        try:
-            values = df['Close'].values.astype('float32')
-            n_lags = 20
-            scaler = MinMaxScaler()
-            scaled = scaler.fit_transform(values.reshape(-1,1)).flatten()
-            X, y = [], []
-            for i in range(n_lags, len(scaled)):
-                X.append(scaled[i-n_lags:i])
-                y.append(scaled[i])
-            X = np.array(X).reshape(-1, n_lags, 1)
-            y = np.array(y)
-            tf.keras.backend.clear_session()
-            model = keras.Sequential([
-                layers.Input(shape=(n_lags,1)),
-                layers.LSTM(64, return_sequences=False),
-                layers.Dense(32, activation='relu'),
-                layers.Dense(1)
-            ])
-            model.compile(optimizer='adam', loss='mse')
-            model.fit(X, y, epochs=10, batch_size=16, verbose=0)
-            last_window = list(scaled[-n_lags:])
-            preds_scaled = []
-            for _ in range(periods):
-                x = np.array(last_window).reshape(1, n_lags, 1)
-                p = float(model.predict(x, verbose=0)[0,0])
-                preds_scaled.append(p)
-                last_window = last_window[1:]+[p]
-            preds = scaler.inverse_transform(np.array(preds_scaled).reshape(-1,1)).flatten().tolist()
-            dates = pd.date_range(start=df['Date'].iloc[-1]+timedelta(days=1), periods=periods)
-            forecasts['LSTM'] = pd.DataFrame({'Date': dates, 'yhat': preds})
-        except Exception as e:
-            st.error(f"LSTM error: {e}")
-
-    return forecasts
-
-# --------------------------
 # Main UI
 # --------------------------
 st.title("POINT BLANK")
@@ -297,22 +227,22 @@ if run:
 
     st.download_button("Download raw data (CSV)", df.to_csv(index=False), file_name=f"{ticker}_raw.csv", mime="text/csv")
 
-    st.subheader("FORECASTS")
-    forecasts = forecast_all(df, periods=30)
-    for model_name, fc in forecasts.items():
-        st.markdown(f"### {model_name}")
-        st.dataframe(fc)
-        st.download_button(f"Download {model_name} forecast CSV", fc.to_csv(index=False), file_name=f"{ticker}_{model_name}.csv", mime="text/csv")
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df['Date'], y=df['Close'], name='Historical'))
-        fig.add_trace(go.Scatter(x=fc['Date'], y=fc['yhat'], name=f'{model_name} Forecast'))
-        if model_name == "Prophet" and 'yhat_lower' in fc.columns and 'yhat_upper' in fc.columns:
-            fig.add_trace(go.Scatter(x=fc['Date'], y=fc['yhat_lower'], name='Lower Bound', line=dict(dash='dot')))
-            fig.add_trace(go.Scatter(x=fc['Date'], y=fc['yhat_upper'], name='Upper Bound', line=dict(dash='dot')))
-        st.plotly_chart(fig, use_container_width=True, theme=None)
+    # NEWS SECTION
+    st.subheader("📰 Recent News")
+    news_items = fetch_news(ticker)
+    if not news_items:
+        st.info("No recent news available for this stock.")
+    else:
+        for n in news_items:
+            st.markdown(f"""
+            <div class="news-card">
+                <div class="news-title"><a href="{n['link']}" target="_blank">{n['title']}</a></div>
+                <div class="news-meta">{n['publisher']} • {n['time']}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
     st.markdown("---")
     st.subheader("Recent data (tail)")
     st.dataframe(df.tail(50), use_container_width=True)
 else:
-    st.info("Select ticker and press 'Run All' to fetch data and forecasts.")
+    st.info("Select ticker and press 'Run All' to fetch data, forecasts, and news.")
